@@ -1,44 +1,28 @@
 const express = require('express');
-const axios = require('axios');
-const path = require('path');
-const app = express();
-const port = 3000;
+const Razorpay = require('razorpay');
 const cors = require('cors');
+const dotenv = require('dotenv');
+const crypto = require('crypto');
 
+dotenv.config();  // Ensure .env file is loaded
+
+const app = express();
 app.use(express.json());
 app.use(cors());
 
-require('dotenv').config();
+const port = 3000;
 
-// Replace with your Cashfree credentials
-const appId = process.env.APP_ID;;
-const secretKey = process.env.SECRET_KEY;
-
-const headers = {
-  accept: 'application/json',
-  'x-api-version': '2023-08-01',
-  'content-type': 'application/json',
-  'x-client-id': appId,
-  'x-client-secret': secretKey,
-};
-
-// In-memory storage for link_id (use a database in production)
-const payments = {};
-
-app.get('/',(req,res)=>{
-  res.send("Api Is Working");
-});
-// Route to serve Terms and Conditions
-app.get('/terms-and-conditions', (req, res) => {
-  res.sendFile(path.join(__dirname, 'TnC.html'));
+// Initialize Razorpay instance with your test API keys
+const razorpayInstance = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,    // Razorpay Test Key ID
+  key_secret: process.env.RAZORPAY_KEY_SECRET,  // Razorpay Test Secret Key
 });
 
-// Route to serve Privacy Policy
-app.get('/privacy-policy', (req, res) => {
-  res.sendFile(path.join(__dirname, 'Privacy.html'));
+app.get('/', (req, res) => {
+  res.send("API is working");
 });
 
-// Payment creation endpoint
+// Create Razorpay order
 app.post('/api/create-payment-order', async (req, res) => {
   const { amount } = req.body;
 
@@ -46,72 +30,42 @@ app.post('/api/create-payment-order', async (req, res) => {
     return res.status(400).json({ error: 'Invalid amount' });
   }
 
-  const linkId = `link_${Date.now()}`; // Unique link ID
-  const orderAmount = amount;
-  const orderCurrency = 'INR';
-  const returnUrl = 'http://localhost:5173'; // Update if different
-  const notifyUrl = 'http://localhost:3000/api/payment-notify'; // Notification URL for webhook
+  // Razorpay expects the amount in paise, so multiply the amount by 100
+  const options = {
+    amount: amount * 100, // in paise
+    currency: "INR",
+    receipt: `receipt_${Date.now()}`,
+  };
 
   try {
-    const response = await axios.post(
-      'https://sandbox.cashfree.com/pg/links',
-      {
-        link_id: linkId,
-        link_amount: orderAmount,
-        link_currency: orderCurrency,
-        link_purpose: 'Payment',
-        link_notify: { send_sms: false, send_email: false },
-        customer_email: 'customer@example.com',
-        customer_details: { customer_phone: '9999999999' },
-        return_url: returnUrl,
-        notify_url: notifyUrl,
-      },
-      { headers }
-    );
-
-    const createdLinkId = response.data.link_id;
-    console.log(`Created payment order with link ID: ${createdLinkId}`);
-
-    if (createdLinkId && response.data.link_url) {
-      payments[createdLinkId] = linkId; // Store the linkId
-      res.json({ paymentLink: response.data.link_url, link_id: createdLinkId });
-    } else {
-      res.status(400).json({ error: 'Failed to create payment' });
-    }
+    const response = await razorpayInstance.orders.create(options);
+    res.json({
+      id: response.id,
+      currency: response.currency,
+      amount: response.amount,
+    });
   } catch (error) {
-    console.error('Error creating payment order:', error.response?.data || error.message);
+    console.error('Error creating payment order:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
-// Payment status check endpoint
-app.get('/api/payment-status/:linkId', async (req, res) => {
-  const { linkId } = req.params;
-
-  if (!linkId || typeof linkId !== 'string') {
-    return res.status(400).json({ error: 'Invalid link ID' });
-  }
-
-  const storedLinkId = payments[linkId];
-  if (!storedLinkId) {
-    return res.status(404).json({ error: 'Order not found' });
-  }
-
-  console.log(`Checking payment status for link ID: ${linkId}`);
+// Verify Razorpay payment signature
+app.post('/api/verify-payment', (req, res) => {
+  const { order_id, payment_id, signature } = req.body;
 
   try {
-    const response = await axios.get(`https://sandbox.cashfree.com/pg/links/${linkId}`, { headers });
+    const hmac = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET);
+    hmac.update(order_id + "|" + payment_id);
+    const generatedSignature = hmac.digest('hex');
 
-    console.log('Response data:', response.data); // Log the response data
-
-    // Check if the payment is successful
-    if (response.data.link_status === 'PAID') {
-      res.json({ status: 'success' });
+    if (generatedSignature === signature) {
+      return res.json({ status: 'success' });
     } else {
-      res.json({ status: 'pending' });
+      return res.status(400).json({ error: 'Signature verification failed' });
     }
   } catch (error) {
-    console.error('Error checking payment status:', error.response?.data || error.message);
+    console.error('Error verifying payment:', error);
     res.status(500).json({ error: 'Internal Server Error' });
   }
 });
