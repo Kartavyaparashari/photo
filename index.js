@@ -7,8 +7,16 @@ const crypto = require('crypto');
 dotenv.config();  // Ensure .env file is loaded
 
 const app = express();
+
+// Configure CORS to allow all origins
+app.use(cors({
+  origin: '*', // Allow all origins
+  methods: ['GET', 'POST'], // Allowed methods
+  allowedHeaders: ['Content-Type', 'Authorization'], // Allowed headers
+  credentials: true // Allow credentials
+}));
+
 app.use(express.json());
-app.use(cors());
 
 const port = 3000;
 
@@ -25,7 +33,7 @@ app.get('/', (req, res) => {
 // Create Razorpay order
 app.post('/api/create-payment-order', async (req, res) => {
   const { amount } = req.body;
-
+  
   if (!amount || typeof amount !== 'number' || amount <= 0) {
     return res.status(400).json({ error: 'Invalid amount' });
   }
@@ -53,7 +61,7 @@ app.post('/api/create-payment-order', async (req, res) => {
 // Verify Razorpay payment signature
 app.post('/api/verify-payment', (req, res) => {
   const { order_id, payment_id, signature } = req.body;
-
+  
   try {
     const hmac = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET);
     hmac.update(order_id + "|" + payment_id);
