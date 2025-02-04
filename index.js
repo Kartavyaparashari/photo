@@ -4,127 +4,80 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const crypto = require('crypto');
 
-dotenv.config();
+dotenv.config();  // Ensure .env file is loaded
 
 const app = express();
 
-// Enhanced CORS configuration
+// Configure CORS to allow all origins
 app.use(cors({
-  origin: '*', // Allow all origins (adjust for production)
-  methods: ['GET', 'POST', 'PUT', 'DELETE'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  origin: '*', // Allow all origins
+  methods: ['GET', 'POST'], // Allowed methods
+  allowedHeaders: ['Content-Type', 'Authorization'], // Allowed headers
+  credentials: true // Allow credentials
 }));
 
 app.use(express.json());
 
-const port = process.env.PORT || 3000;
+const port = 3000;
 
-// Initialize Razorpay with environment variables
+// Initialize Razorpay instance with your test API keys
 const razorpayInstance = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID,
-  key_secret: process.env.RAZORPAY_KEY_SECRET,
+  key_id: process.env.RAZORPAY_KEY_ID,    // Razorpay Test Key ID
+  key_secret: process.env.RAZORPAY_KEY_SECRET,  // Razorpay Test Secret Key
 });
 
-// Basic health check endpoint
 app.get('/', (req, res) => {
-  res.status(200).json({ status: "active", message: "Payment API is working" });
+  res.send("API is working");
 });
 
-// Create payment order endpoint
+// Create Razorpay order
 app.post('/api/create-payment-order', async (req, res) => {
+  const { amount } = req.body;
+  
+  if (!amount || typeof amount !== 'number' || amount <= 0) {
+    return res.status(400).json({ error: 'Invalid amount' });
+  }
+
+  // Razorpay expects the amount in paise, so multiply the amount by 100
+  const options = {
+    amount: amount * 100, // in paise
+    currency: "INR",
+    receipt: `receipt_${Date.now()}`,
+  };
+
   try {
-    const { amount } = req.body;
-
-    // Enhanced amount validation
-    if (!amount || isNaN(amount) || amount <= 0) {
-      return res.status(400).json({ 
-        error: 'Invalid amount. Please provide a positive number.' 
-      });
-    }
-
-    const options = {
-      amount: Math.round(amount * 100), // Convert to paise and ensure integer
-      currency: "INR",
-      receipt: `receipt_${Date.now()}`,
-      payment_capture: 1 // Auto-capture payment
-    };
-
     const response = await razorpayInstance.orders.create(options);
-    
-    res.status(201).json({
-      success: true,
-      orderId: response.id,
+    res.json({
+      id: response.id,
       currency: response.currency,
       amount: response.amount,
-      createdAt: response.created_at
     });
-
   } catch (error) {
-    console.error('Payment order error:', error.error || error);
-    res.status(500).json({ 
-      error: error.error?.description || 'Failed to create payment order' 
-    });
+    console.error('Error creating payment order:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
   }
 });
 
-// Payment verification endpoint
-app.post('/api/verify-payment', async (req, res) => {
+// Verify Razorpay payment signature
+app.post('/api/verify-payment', (req, res) => {
+  const { order_id, payment_id, signature } = req.body;
+  
   try {
-    const { order_id, payment_id, signature } = req.body;
-
-    // Validate required parameters
-    if (!order_id || !payment_id || !signature) {
-      return res.status(400).json({ 
-        error: 'Missing required payment verification parameters' 
-      });
-    }
-
-    // Generate expected signature
     const hmac = crypto.createHmac('sha256', process.env.RAZORPAY_KEY_SECRET);
-    hmac.update(`${order_id}|${payment_id}`);
+    hmac.update(order_id + "|" + payment_id);
     const generatedSignature = hmac.digest('hex');
 
-    // Signature verification
-    if (generatedSignature !== signature) {
-      return res.status(400).json({ 
-        error: 'Payment signature verification failed' 
-      });
+    if (generatedSignature === signature) {
+      return res.json({ status: 'success' });
+    } else {
+      return res.status(400).json({ error: 'Signature verification failed' });
     }
-
-    // Optional: Fetch payment details from Razorpay
-    const payment = await razorpayInstance.payments.fetch(payment_id);
-
-    res.json({
-      success: true,
-      status: 'Payment verified successfully',
-      paymentDetails: {
-        id: payment.id,
-        amount: payment.amount,
-        currency: payment.currency,
-        status: payment.status,
-        method: payment.method
-      }
-    });
-
   } catch (error) {
-    console.error('Verification error:', error.error || error);
-    res.status(500).json({ 
-      error: error.error?.description || 'Payment verification failed' 
-    });
+    console.error('Error verifying payment:', error);
+    res.status(500).json({ error: 'Internal Server Error' });
   }
-});
-
-// Handle 404 errors
-app.use((req, res) => {
-  res.status(404).json({ error: "Endpoint not found" });
-});
-
-// Error handling middleware
-app.use((err, req, res, next) => {
-  console.error('Server error:', err);
-  res.status(500).json({ error: "Internal server error" });
 });
 
 app.listen(port, () => {
-  console.log(`Server running on port ${port}`);
+  console.log(`Server running at http://localhost:${port}`);
 });
